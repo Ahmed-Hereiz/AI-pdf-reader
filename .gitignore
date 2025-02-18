@@ -1,2 +1,6 @@
-customAgents*
 .venv/
+llm.json
+tmp/
+*.pdf
+__pycache__/
+customAgents.egg-info
