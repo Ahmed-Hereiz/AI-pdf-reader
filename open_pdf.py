@@ -6,16 +6,17 @@ import io
 from gtts import gTTS
 import os
 import pygame
-import uuid
 import threading
 import random
+import webbrowser
+
 
 import arabic_reshaper
 from bidi.algorithm import get_display
 import markdown
 from tkhtmlview import HTMLScrolledText, HTMLLabel
 
-from call_ai import ask_ai, explain_ai, translate_ai, chat_ai, notes_ai
+from call_ai import ask_ai, explain_ai, translate_ai, chat_ai, notes_ai, search_ai
 from helpers import load_icon
 
 pygame.mixer.init()
@@ -667,7 +668,7 @@ class PDFViewer:
         tmp_dir = "tmp"
         if not os.path.exists(tmp_dir):
             os.makedirs(tmp_dir)
-        filename = "pdf_ai_tmp_image_" + str(uuid.uuid4()) + ".png"
+        filename = "pdf_ai_tmp_image_" + ".png"
         tmp_path = os.path.join(tmp_dir, filename)
         image.save(tmp_path)
         return tmp_path
@@ -775,12 +776,52 @@ class PDFViewer:
         tmp_image_path = self.save_image_to_tmp(self.selected_cropped_image) if self.selected_cropped_image else None
 
         def threaded_search():
-            dummy_links = ["https://link1", "https://link2", "https://link3"]
-            response_text = "Here are some relevant links:\n\n" + "\n".join(dummy_links)
-            
-            self.root.after(0, lambda: self.show_response_popup(iter([response_text]), language_code="en"))
+            youtube_results = search_ai(self.page_text, tmp_image_path)
+            if youtube_results:
+                self.root.after(0, lambda: self.show_youtube_results_popup(youtube_results))
+            else:
+                response_text = "No results found."
+                self.root.after(0, lambda: self.show_response_popup(iter([response_text]), language_code="en"))
 
         threading.Thread(target=threaded_search, daemon=True).start()
+
+    def show_youtube_results_popup(self, results):
+        popup = tk.Toplevel(self.root)
+        popup.title("YouTube Search Results")
+        popup.geometry("700x500")
+        
+        # Use a canvas and a scrollbar for potentially many results.
+        canvas = tk.Canvas(popup, borderwidth=0)
+        frame = tk.Frame(canvas)
+        scrollbar = tk.Scrollbar(popup, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        canvas.create_window((0, 0), window=frame, anchor="nw")
+
+        # Make sure the canvas scrolls with the frame.
+        def on_frame_configure(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        frame.bind("<Configure>", on_frame_configure)
+
+        for result in results:
+            result_frame = tk.Frame(frame, pady=5, padx=5, bd=1, relief="groove")
+            result_frame.pack(fill="x", padx=5, pady=5)
+
+            title_label = tk.Label(result_frame, text=f"Title: {result['title']}", font=("Arial", 12, "bold"))
+            title_label.pack(anchor="w", padx=5, pady=(5, 0))
+
+            description_label = tk.Label(result_frame, text=f"Description: {result['description']}", font=("Arial", 10), wraplength=650, justify="left")
+            description_label.pack(anchor="w", padx=5, pady=(2, 5))
+
+            def open_url(url=result['video_url']):
+                webbrowser.open(url)
+
+            url_button = tk.Button(result_frame, text="Watch Video", fg="blue", cursor="hand2", command=open_url)
+            url_button.pack(anchor="w", padx=5, pady=(0,5))
+
+
 
     def show_response_popup(self, response_generator, language_code="en"):
         if self.response_popup is not None and self.response_popup.winfo_exists():
