@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, PhotoImage
 import fitz  # PyMuPDF
 from PIL import Image, ImageTk
 import io
@@ -641,15 +641,25 @@ class PDFViewer:
             self.selection_overlay = None
         overlay_frame = ttk.Frame(self.page_canvas, style="Overlay.TFrame")
 
-        ask_btn = ttk.Button(overlay_frame, text="💬 Ask AI", command=self.ask_ai_overlay)
-        explain_btn = ttk.Button(overlay_frame, text="💡 Explain", command=self.explain_ai_overlay)
-        translate_btn = ttk.Button(overlay_frame, text="L Translate", command=self.translate_ai_popup)
-        search_btn = ttk.Button(overlay_frame, text="🔍 Search", command=self.search_ai_overlay)
+        ask_img = Image.open("assets/ask_icon.png").resize((20, 20), Image.LANCZOS)
+        self.ask_icon = ImageTk.PhotoImage(ask_img)
+        explain_img = Image.open("assets/explain_icon.png").resize((20, 20), Image.LANCZOS)
+        self.explain_icon = ImageTk.PhotoImage(explain_img)
+        translate_img = Image.open("assets/translate_icon.png").resize((20, 20), Image.LANCZOS)
+        self.translate_icon = ImageTk.PhotoImage(translate_img)
+        search_img = Image.open("assets/search_icon.png").resize((20, 20), Image.LANCZOS)
+        self.search_icon = ImageTk.PhotoImage(search_img)
+
+        ask_btn = ttk.Button(overlay_frame, image=self.ask_icon, text="Ask AI", compound=tk.LEFT, command=self.ask_ai_overlay)
+        explain_btn = ttk.Button(overlay_frame, image=self.explain_icon, text="Explain", compound=tk.LEFT, command=self.explain_ai_overlay)
+        translate_btn = ttk.Button(overlay_frame, image=self.translate_icon, text="Translate", compound=tk.LEFT, command=self.translate_ai_popup)
+        search_btn = ttk.Button(overlay_frame, image=self.search_icon, text="Search", compound=tk.LEFT, command=self.search_ai_overlay)
 
         ask_btn.grid(row=0, column=0, padx=2, pady=2)
         explain_btn.grid(row=0, column=1, padx=2, pady=2)
         translate_btn.grid(row=0, column=2, padx=2, pady=2)
         search_btn.grid(row=0, column=3, padx=2, pady=2)
+
 
         self.selection_overlay = self.page_canvas.create_window(x + 5, y + 5, window=overlay_frame, anchor="nw")
 
