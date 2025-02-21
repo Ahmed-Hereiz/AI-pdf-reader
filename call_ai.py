@@ -3,6 +3,8 @@ from customAgents.agent_prompt import SimplePrompt
 from customAgents.runtime import SimpleRuntime
 import json
 
+from helpers import youtube_search
+
 with open("llm.json", "r") as f:
     config = json.load(f)
 
@@ -59,6 +61,34 @@ def notes_ai(full_page_text, image):
     notes_agent = SimpleRuntime(llm=notes_llm, prompt=notes_prompt)
     
     return notes_agent.loop()
+
+
+def search_ai(full_page_text, image):
+    search_text_prompt = f"your task is to look here at this text: '{full_page_text}'. Additionally, consider the image provided for any visual context: '{image}'. then write a single query that can be used to get youtube title for searching and recommending youtube videos, just without explianations output the title so that it can be used to get the videos"
+    search_llm = SimpleMultiModal(api_key=config["api_key"], model=config["model"], temperature=0.5)
+    search_prompt = SimplePrompt(text=search_text_prompt, image=image)
+    search_prompt.construct_prompt()
+    search_agent = SimpleRuntime(llm=search_llm, prompt=search_prompt)
+    youtube_query = search_agent.loop()
+    results = youtube_search(youtube_query, config["youtube_key"])
+    
+    youtube_results = []
+    if results:
+        for item in results.get("items", []):
+            title = item["snippet"]["title"]
+            video_id = item["id"]["videoId"]
+            video_url = f"https://www.youtube.com/watch?v={video_id}"
+            description = item["snippet"]["description"]
+            thumbnails = item["snippet"]["thumbnails"]
+            thumbnail_url = thumbnails["default"]["url"]
+            youtube_results.append({
+                "title": title,
+                "video_url": video_url,
+                "description": description,
+                "thumbnail_url": thumbnail_url
+            })
+    return youtube_results
+
 
 # def test_functions():
 #     # Test data
