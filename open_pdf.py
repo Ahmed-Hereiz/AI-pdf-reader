@@ -9,6 +9,7 @@ import pygame
 import threading
 import random
 import webbrowser
+import requests
 
 
 import arabic_reshaper
@@ -648,13 +649,13 @@ class PDFViewer:
         self.explain_icon = ImageTk.PhotoImage(explain_img)
         translate_img = Image.open("assets/translate_icon.png").resize((20, 20), Image.LANCZOS)
         self.translate_icon = ImageTk.PhotoImage(translate_img)
-        search_img = Image.open("assets/search_icon.png").resize((20, 20), Image.LANCZOS)
+        search_img = Image.open("assets/youtube_icon.png").resize((20, 20), Image.LANCZOS)
         self.search_icon = ImageTk.PhotoImage(search_img)
 
         ask_btn = ttk.Button(overlay_frame, image=self.ask_icon, text="Ask AI", compound=tk.LEFT, command=self.ask_ai_overlay)
         explain_btn = ttk.Button(overlay_frame, image=self.explain_icon, text="Explain", compound=tk.LEFT, command=self.explain_ai_overlay)
         translate_btn = ttk.Button(overlay_frame, image=self.translate_icon, text="Translate", compound=tk.LEFT, command=self.translate_ai_popup)
-        search_btn = ttk.Button(overlay_frame, image=self.search_icon, text="Search", compound=tk.LEFT, command=self.search_ai_overlay)
+        search_btn = ttk.Button(overlay_frame, image=self.search_icon, text="Youtube Search", compound=tk.LEFT, command=self.search_ai_overlay)
 
         ask_btn.grid(row=0, column=0, padx=2, pady=2)
         explain_btn.grid(row=0, column=1, padx=2, pady=2)
@@ -773,10 +774,23 @@ class PDFViewer:
         threading.Thread(target=threaded_translate, daemon=True).start()
 
     def search_ai_overlay(self):
+        self.search_popup = tk.Toplevel(self.root)
+        self.search_popup.title("🔎 Searching YouTube")
+        self.search_popup.configure(bg="#E3F2FD")
+        self.search_popup.transient(self.root)
+        self.search_popup.grab_set()
+
+        waiting_label = ttk.Label(self.search_popup, text="Searching for YouTube videos, please wait...")
+        waiting_label.pack(padx=10, pady=(10, 5))
+
+        cancel_button = ttk.Button(self.search_popup, text="Cancel", command=self.search_popup.destroy)
+        cancel_button.pack(pady=(0, 10))
+
         tmp_image_path = self.save_image_to_tmp(self.selected_cropped_image) if self.selected_cropped_image else None
 
         def threaded_search():
             youtube_results = search_ai(self.page_text, tmp_image_path)
+            self.root.after(0, lambda: self.search_popup.destroy())
             if youtube_results:
                 self.root.after(0, lambda: self.show_youtube_results_popup(youtube_results))
             else:
@@ -785,42 +799,103 @@ class PDFViewer:
 
         threading.Thread(target=threaded_search, daemon=True).start()
 
+
     def show_youtube_results_popup(self, results):
         popup = tk.Toplevel(self.root)
         popup.title("YouTube Search Results")
-        popup.geometry("700x500")
+        popup.configure(bg="#F0F4FB")
+        popup.geometry("800x600")  
         
-        # Use a canvas and a scrollbar for potentially many results.
-        canvas = tk.Canvas(popup, borderwidth=0)
-        frame = tk.Frame(canvas)
-        scrollbar = tk.Scrollbar(popup, orient="vertical", command=canvas.yview)
+        # Optional heading at the top
+        heading_label = tk.Label(
+            popup,
+            text="YouTube Search Results",
+            font=("Arial", 16, "bold"),
+            bg="#F0F4FB",
+            fg="#0D47A1"
+        )
+        heading_label.pack(pady=10)
+        
+        canvas = tk.Canvas(popup, bg="#F0F4FB", highlightthickness=0)
+        scrollbar = ttk.Scrollbar(popup, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
-
         scrollbar.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)
-        canvas.create_window((0, 0), window=frame, anchor="nw")
-
-        # Make sure the canvas scrolls with the frame.
-        def on_frame_configure(event):
+        
+        # A container frame inside the canvas.
+        container = tk.Frame(canvas, bg="#F0F4FB")
+        canvas.create_window((0, 0), window=container, anchor="nw")
+        
+        def on_configure(event):
             canvas.configure(scrollregion=canvas.bbox("all"))
-        frame.bind("<Configure>", on_frame_configure)
-
-        for result in results:
-            result_frame = tk.Frame(frame, pady=5, padx=5, bd=1, relief="groove")
-            result_frame.pack(fill="x", padx=5, pady=5)
-
-            title_label = tk.Label(result_frame, text=f"Title: {result['title']}", font=("Arial", 12, "bold"))
-            title_label.pack(anchor="w", padx=5, pady=(5, 0))
-
-            description_label = tk.Label(result_frame, text=f"Description: {result['description']}", font=("Arial", 10), wraplength=650, justify="left")
-            description_label.pack(anchor="w", padx=5, pady=(2, 5))
-
-            def open_url(url=result['video_url']):
+        container.bind("<Configure>", on_configure)
+        
+        # Define normal and hover background colors for each row.
+        NORMAL_BG = "white"
+        HOVER_BG = "#e6f2ff"  # Light blue hover
+        
+        for idx, result in enumerate(results):
+            # Each row is a clickable Frame with a light border.
+            row_frame = tk.Frame(
+                container,
+                bg=NORMAL_BG,
+                bd=1,
+                relief="ridge",
+                padx=10,
+                pady=10
+            )
+            row_frame.pack(fill="x", padx=10, pady=5)
+            
+            # Define click action for the row.
+            def open_url(event, url=result["video_url"]):
                 webbrowser.open(url)
+            
+            # Bind the entire frame to open the URL on click.
+            row_frame.bind("<Button-1>", open_url)
+            
+            # Hover effect: change background color when mouse enters/leaves.
+            def on_enter(event, frame=row_frame):
+                frame.configure(bg=HOVER_BG)
+                for child in frame.winfo_children():
+                    child.configure(bg=HOVER_BG)
+            def on_leave(event, frame=row_frame):
+                frame.configure(bg=NORMAL_BG)
+                for child in frame.winfo_children():
+                    child.configure(bg=NORMAL_BG)
+            
+            row_frame.bind("<Enter>", on_enter)
+            row_frame.bind("<Leave>", on_leave)
+            
+            # Title label (clickable + hover).
+            title_label = tk.Label(
+                row_frame,
+                text=result["title"],
+                font=("Arial", 14, "bold"),
+                bg=NORMAL_BG,
+                fg="#0D47A1",
+                anchor="w"
+            )
+            title_label.pack(side="top", fill="x")
+            
+            # Make the label clickable and have hover effect.
+            title_label.bind("<Button-1>", open_url)
+            title_label.bind("<Enter>", on_enter)
+            title_label.bind("<Leave>", on_leave)
 
-            url_button = tk.Button(result_frame, text="Watch Video", fg="blue", cursor="hand2", command=open_url)
-            url_button.pack(anchor="w", padx=5, pady=(0,5))
-
+            description_label = tk.Label(
+                row_frame,
+                text=result["description"],
+                font=("Arial", 12),
+                bg=NORMAL_BG,
+                fg="#0D47A1",
+                wraplength=750,
+                justify="left",
+                anchor="w"
+            )
+            description_label.pack(side="top", fill="x", pady=(5, 0))
+            description_label.bind("<Button-1>", open_url)
+            description_label.bind("<Enter>", on_enter)
+            description_label.bind("<Leave>", on_leave)
 
 
     def show_response_popup(self, response_generator, language_code="en"):
