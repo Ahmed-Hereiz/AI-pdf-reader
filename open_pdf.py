@@ -830,9 +830,8 @@ class PDFViewer:
             canvas.configure(scrollregion=canvas.bbox("all"))
         container.bind("<Configure>", on_configure)
         
-        # Define normal and hover background colors for each row.
         NORMAL_BG = "white"
-        HOVER_BG = "#e6f2ff"  # Light blue hover
+        HOVER_BG = "#e6f2ff"  
         
         for idx, result in enumerate(results):
             # Each row is a clickable Frame with a light border.
