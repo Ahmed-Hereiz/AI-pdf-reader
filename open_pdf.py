@@ -7,13 +7,18 @@ from gtts import gTTS
 import os
 import pygame
 import uuid
+import threading
+import random
 
 import arabic_reshaper
 from bidi.algorithm import get_display
-from call_ai import ask_ai, explain_ai, translate_ai, chat_ai
+import markdown
+from tkhtmlview import HTMLScrolledText, HTMLLabel
+
+from call_ai import ask_ai, explain_ai, translate_ai, chat_ai, notes_ai
+from helpers import load_icon
 
 pygame.mixer.init()
-
 
 class PDFViewer:
     def __init__(self, root):
@@ -25,16 +30,15 @@ class PDFViewer:
         self.current_page = 0
         self.num_pages = 0
 
-        # Variables to store the rendered image and full page text
+        # For rendering PDF pages
         self.current_pil_image = None
         self.page_text = ""
         self.page_image_tk = None
+        self.img_offset = (0, 0)
 
-        # Popups
+        # For selection overlays
         self.ai_popup = None
         self.response_popup = None
-
-        # Selection variables
         self.sel_rect = None
         self.sel_start = None
         self.selection_overlay = None
@@ -43,27 +47,36 @@ class PDFViewer:
         # Audio playback variables
         self.current_audio_file = None
 
-        # Zoom factor
+        # Zoom factor for PDF pages
         self.zoom = 1.5
 
         # Chat panel state
         self.chat_open = False
-        self.chat_target_width = 350  # Extended chat width
+        self.chat_target_width = 350
         self.current_chat_width = 0
 
-        # Emoji icons for open/close toggle
-        self.chat_open_icon = "Chat with AI"
-        self.chat_close_icon = "❌"
+        # Chat icons
+        self.chat_open_icon_img = load_icon("chat-open.png", size=(24, 24))
+        self.chat_close_icon_img = load_icon("chat-close.png", size=(24, 24))
+        self.chat_open_icon_text = "Chat with AI"
+        self.chat_close_icon_text = "❌"
 
-        # For TTS and partial streaming
+        # For streaming responses and TTS
         self.current_response_text = ""
         self.response_language = "en"
-
-        # Flag to track if streaming is in progress
         self.streaming_in_progress = False
 
-        # Reference to the "Read Aloud" button for updating text while waiting
+        # TTS streaming
+        self.tts_streaming = False
+        self.tts_read_index = 0
         self.read_button = None
+
+        # We'll keep a reference to any sticky notes we create
+        # keyed by page number: page_notes[page_number] = (widget, or data)
+        self.page_notes = {}
+
+        # This button is created but hidden/disabled until PDF is opened
+        self.add_note_btn = None
 
         self.setup_styles()
         self.create_widgets()
@@ -72,17 +85,34 @@ class PDFViewer:
         style = ttk.Style()
         style.theme_use("clam")
 
-        # General blue-themed styles
+        # Main frames
         style.configure("TFrame", background="#E3F2FD")
-        style.configure("TLabel", background="#E3F2FD", foreground="#0D47A1", font=("Helvetica", 10))
-        style.configure("TButton", font=("Helvetica", 10, "bold"), padding=4)
+
+        # Toolbar
+        style.configure("Toolbar.TFrame", background="#E1F5FE")
+
+        style.configure(
+            "RoundedButton.TButton",
+            padding=6,
+            relief="flat",
+            background="#2196F3",
+            foreground="white",
+            borderwidth=0,
+            font=("Helvetica", 11, "bold")
+        )
         style.map(
-            "TButton",
+            "RoundedButton.TButton",
             background=[("active", "#1976D2"), ("!active", "#2196F3")],
             foreground=[("active", "white"), ("!active", "white")]
         )
 
-        # Scrollbars
+        style.configure(
+            "Toolbar.TLabel",
+            background="#E1F5FE",
+            foreground="#0D47A1",
+            font=("Helvetica", 12, "bold")
+        )
+
         style.configure(
             "Vertical.TScrollbar",
             gripcount=0,
@@ -104,48 +134,65 @@ class PDFViewer:
             arrowcolor="#0D47A1"
         )
 
-        # Selection overlay frame
         style.configure("Overlay.TFrame", background="#BBDEFB", relief="raised", borderwidth=1)
-
-        # Chat panel
         style.configure("Chat.TFrame", background="#F7F7F7")
 
     def create_widgets(self):
-        # Toolbar
-        toolbar = ttk.Frame(self.root, padding=5)
+        # Top toolbar
+        toolbar = ttk.Frame(self.root, style="Toolbar.TFrame", padding=5)
         toolbar.pack(side=tk.TOP, fill=tk.X)
 
-        open_btn = ttk.Button(toolbar, text="Open PDF", command=self.open_pdf)
+        open_icon = load_icon("open_pdf.png", size=(32, 32))
+        prev_icon = load_icon("prev_page.png", size=(32, 32))
+        next_icon = load_icon("next_page.png", size=(32, 32))
+
+        open_btn = ttk.Button(
+            toolbar,
+            text="Open PDF",
+            style="RoundedButton.TButton",
+            image=open_icon,
+            compound=tk.LEFT,
+            command=self.open_pdf
+        )
+        open_btn.image = open_icon
         open_btn.pack(side=tk.LEFT, padx=4)
 
         self.prev_btn = ttk.Button(
             toolbar,
             text="Previous Page",
+            style="RoundedButton.TButton",
+            image=prev_icon,
+            compound=tk.LEFT,
             command=lambda: self.change_page("prev", "bottom"),
             state=tk.DISABLED
         )
+        self.prev_btn.image = prev_icon
         self.prev_btn.pack(side=tk.LEFT, padx=4)
 
         self.next_btn = ttk.Button(
             toolbar,
             text="Next Page",
+            style="RoundedButton.TButton",
+            image=next_icon,
+            compound=tk.LEFT,
             command=lambda: self.change_page("next", "top"),
             state=tk.DISABLED
         )
+        self.next_btn.image = next_icon
         self.next_btn.pack(side=tk.LEFT, padx=4)
 
-        self.page_label = ttk.Label(toolbar, text="Page: 0/0")
+        self.page_label = ttk.Label(toolbar, text="Page: 0/0", style="Toolbar.TLabel")
         self.page_label.pack(side=tk.LEFT, padx=10)
 
-        # Main container frame
+        # Main frame
         self.main_frame = ttk.Frame(self.root)
         self.main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Left frame: PDF viewer
+        # Left side for PDF
         self.viewer_frame = ttk.Frame(self.main_frame)
         self.viewer_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Canvas and scrollbars for PDF viewer
+        # Canvas + scrollbars
         self.canvas_frame = ttk.Frame(self.viewer_frame)
         self.canvas_frame.pack(fill=tk.BOTH, expand=True)
 
@@ -154,42 +201,195 @@ class PDFViewer:
 
         self.v_scroll = ttk.Scrollbar(self.canvas_frame, orient=tk.VERTICAL, command=self.page_canvas.yview)
         self.v_scroll.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 2))
-
         self.h_scroll = ttk.Scrollbar(self.viewer_frame, orient=tk.HORIZONTAL, command=self.page_canvas.xview)
         self.h_scroll.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=(0, 5))
-
         self.page_canvas.configure(yscrollcommand=self.v_scroll.set, xscrollcommand=self.h_scroll.set)
 
-        # Global mouse wheel bindings
-        self.root.bind_all("<MouseWheel>", self.on_mouse_wheel)   # Windows/macOS
-        self.root.bind_all("<Button-4>", self.on_mouse_wheel)     # Linux scroll up
-        self.root.bind_all("<Button-5>", self.on_mouse_wheel)     # Linux scroll down
+        note_icon = load_icon("note_icon.png", size=(32, 32))
+        self.add_note_btn = ttk.Button(
+            self.viewer_frame,
+            text="Take page's notes with AI",
+            image=note_icon,
+            style="RoundedButton.TButton",
+            compound=tk.LEFT,
+            command=self.add_sticky_note
+        )
+        self.add_note_btn.image = note_icon
+        self.add_note_btn.place(x=10, rely=1.0, anchor="sw", y=-10)  
+        self.add_note_btn.config(state=tk.DISABLED) 
+        # ===============================================================================
+
+        # Mouse wheel
+        self.root.bind_all("<MouseWheel>", self.on_mouse_wheel)
+        self.root.bind_all("<Button-4>", self.on_mouse_wheel)
+        self.root.bind_all("<Button-5>", self.on_mouse_wheel)
         self.page_canvas.bind("<Enter>", lambda e: self.page_canvas.focus_set())
 
-        # Bind selection events
+        # Selection
         self.page_canvas.bind("<Button-1>", self.on_canvas_mouse_down)
         self.page_canvas.bind("<B1-Motion>", self.on_canvas_mouse_drag)
         self.page_canvas.bind("<ButtonRelease-1>", self.on_canvas_mouse_up)
 
-        # Right frame: AI Chat panel (initially hidden with width=0)
+        # Right frame: AI Chat
         self.chat_frame = ttk.Frame(self.main_frame, style="Chat.TFrame", width=0)
         self.chat_frame.pack(side=tk.RIGHT, fill=tk.Y)
-        self.chat_frame.pack_propagate(False)  # Prevent auto resizing
+        self.chat_frame.pack_propagate(False)
         self.setup_ai_chat()
 
-        # Toggle chat button at top right
         self.toggle_button = ttk.Button(
             self.main_frame,
-            text=self.chat_open_icon,
-            command=self.toggle_chat
+            style="RoundedButton.TButton",
+            command=self.toggle_chat,
+            image=self.chat_open_icon_img if self.chat_open_icon_img else None,
+            text="" if self.chat_open_icon_img else self.chat_open_icon_text,
+            compound=tk.LEFT
         )
         self.toggle_button.place(relx=1.0, rely=0.0, anchor="ne", x=-5, y=5)
 
-    def setup_ai_chat(self):
-        """Configure the chat panel UI: title, chat log area, multiline input."""
-        self.chat_frame.configure(padding=10)
+    # -- Sticky Note Logic --
+    def add_sticky_note(self):
+        """
+        1) Immediately show a 'Generating...' note so the user knows it's in progress.
+        2) In a background thread, call notes_ai(...) to get Markdown text.
+        3) Convert to HTML and replace the placeholder in self.page_notes.
+        4) Show the final note in show_sticky_note_for_page.
+        """
 
-        # Title bar
+        # 1) Show a placeholder note immediately
+        self.page_notes[self.current_page] = "<p><em>Generating note...</em></p>"
+        self.show_sticky_note_for_page(self.current_page)
+
+        def threaded_note():
+            # 2) Call your real AI function to get Markdown text
+            md_text = notes_ai(self.page_text, self.current_pil_image)
+            # 3) Convert the Markdown to HTML
+            html_text = markdown.markdown(md_text)
+            self.page_notes[self.current_page] = html_text
+            # 4) Update the UI in the main thread
+            self.root.after(0, lambda: self.show_sticky_note_for_page(self.current_page))
+
+        # Run in background so UI remains responsive
+        threading.Thread(target=threaded_note, daemon=True).start()
+
+
+    def show_sticky_note_for_page(self, page_number):
+        """
+        Display the stored HTML note for 'page_number' on the left side of the page,
+        with a vertical scrollbar if needed. Also includes a 'Remove Note' button.
+        """
+
+        # Remove any existing note from the canvas
+        existing = self.page_canvas.find_withtag("sticky_note")
+        for item in existing:
+            self.page_canvas.delete(item)
+
+        if page_number not in self.page_notes:
+            return
+
+        html_text = self.page_notes[page_number]
+
+        # Choose a random background color
+        note_colors = [
+            # "#FFFACD",  # LemonChiffon
+            # "#FFDAB9",  # PeachPuff
+            # "#E0FFFF",  # LightCyan
+            # "#F5FFFA",  # MintCream
+            # "#F0FFF0",  # Honeydew
+            # "#FFF0F5",  # LavenderBlush
+            # "#FAFAD2",  # LightGoldenRodYellow
+            # "#FFE4E1",  # MistyRose
+            # "#E6E6FA",  # Lavender
+            # "#FFB6C1",  # LightPink
+            # "#FFDEAD",  # NavajoWhite
+            # "#FFF5EE",  # Seashell
+            # "#F0E68C",  # Khaki
+            # "#AFEEEE",  # PaleTurquoise
+            # "#98FB98",  # PaleGreen
+            # "#FFEFD5",  # PapayaWhip
+            # "#FFF8DC",  # Cornsilk
+            # "#F5F5DC",  # Beige
+            # "#F8F8FF",  # GhostWhite
+            "#F0F8FF"   # AliceBlue
+        ]
+        bg_color = random.choice(note_colors)
+
+        # We'll allow a fixed width and a maximum height
+        note_width = 400
+        max_note_height = 700
+
+        # Compute where to place the note on the PDF
+        if self.current_pil_image:
+            pdf_width, pdf_height = self.current_pil_image.width, self.current_pil_image.height
+            x_left = 15
+            y_center = self.img_offset[1] + (pdf_height // 2)
+        else:
+            x_left = 15
+            y_center = 100
+
+        # Create a frame for the note
+        note_frame = tk.Frame(
+            self.page_canvas,
+            bg=bg_color,
+            highlightthickness=1,
+            highlightbackground="#888"
+        )
+        # Let the frame expand to content initially
+        note_frame.pack_propagate(True)
+
+        # --- Top bar with "Remove Note" button ---
+        top_bar = tk.Frame(note_frame, bg=bg_color)
+        top_bar.pack(fill="x", side="top")
+
+        def delete_current_note():
+            """Remove the note from this page and from the canvas."""
+            if page_number in self.page_notes:
+                del self.page_notes[page_number]
+            self.page_canvas.delete(window_id)
+
+        del_btn = ttk.Button(top_bar, text="Remove Note", command=delete_current_note)
+        del_btn.pack(side="right", padx=5, pady=5)
+
+        # --- Main content area: HTMLScrolledText with vertical scrollbar ---
+        # This widget will automatically show a scrollbar if content is tall
+        scroll_label = HTMLScrolledText(
+            note_frame,
+            html=html_text,
+            background=bg_color,
+            padx=5,
+            pady=5
+        )
+        scroll_label.pack(fill="both", expand=True)
+
+        # Place the note on the canvas (temporary) so we can measure size
+        window_id = self.page_canvas.create_window(
+            x_left, y_center,
+            anchor="center",
+            window=note_frame,
+            tags="sticky_note"
+        )
+
+        # Force geometry calculation
+        scroll_label.update_idletasks()
+
+        required_width = scroll_label.winfo_reqwidth()
+        required_height = scroll_label.winfo_reqheight()
+
+        # Clamp the height
+        final_height = min(required_height, max_note_height)
+
+        # Fix the frame to final size; no more auto-shrinking
+        note_frame.config(width=note_width, height=final_height)
+        note_frame.pack_propagate(False)
+
+        # Recompute the Y coordinate to center vertically
+        final_y = y_center - (final_height // 2)
+
+        # Move the note to that position, anchored top-left
+        self.page_canvas.coords(window_id, x_left, final_y)
+        self.page_canvas.itemconfig(window_id, anchor="nw")
+
+    def setup_ai_chat(self):
+        self.chat_frame.configure(padding=10)
         top_bar = tk.Frame(self.chat_frame, bg="#F7F7F7")
         top_bar.pack(fill=tk.X, pady=(0, 5))
 
@@ -213,7 +413,6 @@ class PDFViewer:
         )
         close_btn.pack(side=tk.RIGHT, padx=5)
 
-        # Chat log area
         self.chat_log_frame = ttk.Frame(self.chat_frame)
         self.chat_log_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
@@ -234,9 +433,8 @@ class PDFViewer:
         self.chat_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self.chat_log.configure(yscrollcommand=self.chat_scroll.set)
 
-        # Input row for multiline text + send button
         chat_input_frame = ttk.Frame(self.chat_frame)
-        chat_input_frame.pack(fill=tk.X, padx=5, pady=(5, 5))
+        chat_input_frame.pack(fill=tk.X, padx=5, pady=5)
 
         self.chat_input = tk.Text(
             chat_input_frame,
@@ -255,25 +453,26 @@ class PDFViewer:
         send_button.pack(side=tk.LEFT, padx=(5, 0))
 
     def on_enter_pressed(self, event):
-        """
-        Pressing Enter sends the message.
-        Pressing Shift+Enter inserts a newline.
-        """
-        if event.state & 0x0001:  # Shift key pressed
+        if event.state & 0x0001:
             return None
         else:
             self.process_ai_chat_message()
             return "break"
 
-    # --- Chat Toggle & Animation ---
     def toggle_chat(self):
         if self.chat_open:
             self.animate_chat_close()
-            self.toggle_button.config(text=self.chat_open_icon)
+            self.toggle_button.config(
+                image=self.chat_open_icon_img if self.chat_open_icon_img else "",
+                text="" if self.chat_open_icon_img else self.chat_open_icon_text
+            )
             self.chat_open = False
         else:
             self.animate_chat_open()
-            self.toggle_button.config(text=self.chat_close_icon)
+            self.toggle_button.config(
+                image=self.chat_close_icon_img if self.chat_close_icon_img else "",
+                text="" if self.chat_close_icon_img else self.chat_close_icon_text
+            )
             self.chat_open = True
 
     def animate_chat_open(self):
@@ -292,7 +491,6 @@ class PDFViewer:
             self.chat_frame.config(width=self.current_chat_width)
             self.root.after(10, self.animate_chat_close)
 
-    # --- PDF Functions ---
     def open_pdf(self):
         pdf_path = filedialog.askopenfilename(filetypes=[("PDF Files", "*.pdf")])
         if pdf_path:
@@ -302,6 +500,8 @@ class PDFViewer:
                 self.current_page = 0
                 self.update_navigation_buttons()
                 self.display_page(self.current_page, scroll_position="top")
+                # Enable the "Add Note" button now that PDF is open
+                self.add_note_btn.config(state=tk.NORMAL)
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to open PDF:\n{e}")
 
@@ -336,6 +536,9 @@ class PDFViewer:
 
         self.page_label.config(text=f"Page: {page_number+1}/{self.num_pages}")
 
+        # If this page has a note, show it
+        self.show_sticky_note_for_page(page_number)
+
     def change_page(self, direction, scroll_position="top"):
         if direction == "next" and self.current_page < self.num_pages - 1:
             self.current_page += 1
@@ -359,24 +562,19 @@ class PDFViewer:
         if self.sel_start is not None:
             return "break"
         if hasattr(event, 'num'):
-            # Linux scroll
             delta = -1 if event.num == 4 else 1 if event.num == 5 else 0
         else:
-            # Windows/macOS scroll
             delta = -int(event.delta / 120)
         first, last = self.page_canvas.yview()
-        if delta > 0 and last >= 0.999:
-            if self.current_page < self.num_pages - 1:
-                self.change_page("next", scroll_position="top")
-                return "break"
-        elif delta < 0 and first <= 0.001:
-            if self.current_page > 0:
-                self.change_page("prev", scroll_position="bottom")
-                return "break"
+        if delta > 0 and last >= 0.999 and self.current_page < self.num_pages - 1:
+            self.change_page("next", scroll_position="top")
+            return "break"
+        elif delta < 0 and first <= 0.001 and self.current_page > 0:
+            self.change_page("prev", scroll_position="bottom")
+            return "break"
         self.page_canvas.yview_scroll(delta, "units")
         return "break"
 
-    # --- Selection & Overlay ---
     def on_canvas_mouse_down(self, event):
         if self.selection_overlay is not None:
             self.page_canvas.delete(self.selection_overlay)
@@ -428,16 +626,10 @@ class PDFViewer:
         if not self.current_pil_image:
             return None
         ox, oy = self.img_offset
-        crop_left = x0 - ox
-        crop_top = y0 - oy
-        crop_right = x1 - ox
-        crop_bottom = y1 - oy
-        img_width, img_height = self.current_pil_image.size
-
-        crop_left = max(0, min(img_width, crop_left))
-        crop_right = max(0, min(img_width, crop_right))
-        crop_top = max(0, min(img_height, crop_top))
-        crop_bottom = max(0, min(img_height, crop_bottom))
+        crop_left = max(0, min(self.current_pil_image.width, x0 - ox))
+        crop_top = max(0, min(self.current_pil_image.height, y0 - oy))
+        crop_right = max(0, min(self.current_pil_image.width, x1 - ox))
+        crop_bottom = max(0, min(self.current_pil_image.height, y1 - oy))
         if crop_right <= crop_left or crop_bottom <= crop_top:
             return None
         return self.current_pil_image.crop((crop_left, crop_top, crop_right, crop_bottom))
@@ -451,15 +643,16 @@ class PDFViewer:
 
         ask_btn = ttk.Button(overlay_frame, text="💬 Ask AI", command=self.ask_ai_overlay)
         explain_btn = ttk.Button(overlay_frame, text="💡 Explain", command=self.explain_ai_overlay)
-        translate_btn = ttk.Button(overlay_frame, text="🌐 Translate", command=self.translate_ai_popup)
+        translate_btn = ttk.Button(overlay_frame, text="L Translate", command=self.translate_ai_popup)
+        search_btn = ttk.Button(overlay_frame, text="🔍 Search", command=self.search_ai_overlay)
 
         ask_btn.grid(row=0, column=0, padx=2, pady=2)
         explain_btn.grid(row=0, column=1, padx=2, pady=2)
         translate_btn.grid(row=0, column=2, padx=2, pady=2)
+        search_btn.grid(row=0, column=3, padx=2, pady=2)
 
         self.selection_overlay = self.page_canvas.create_window(x + 5, y + 5, window=overlay_frame, anchor="nw")
 
-    # --- Helper: Save image to tmp dir ---
     def save_image_to_tmp(self, image):
         tmp_dir = "tmp"
         if not os.path.exists(tmp_dir):
@@ -498,23 +691,22 @@ class PDFViewer:
     def process_ask_ai(self):
         question = self.ask_entry.get().strip()
         self.ask_popup.destroy()
+        tmp_image_path = self.save_image_to_tmp(self.selected_cropped_image) if self.selected_cropped_image else None
 
-        if self.selected_cropped_image:
-            tmp_image_path = self.save_image_to_tmp(self.selected_cropped_image)
-        else:
-            tmp_image_path = None
+        def threaded_ask():
+            generator = ask_ai(question, self.page_text, tmp_image_path)
+            self.root.after(1, lambda: self.show_response_popup(generator, language_code="en"))
 
-        generator = ask_ai(question, self.page_text, tmp_image_path)
-        self.show_response_popup(generator, language_code="en")
+        threading.Thread(target=threaded_ask, daemon=True).start()
 
     def explain_ai_overlay(self):
-        if self.selected_cropped_image:
-            tmp_image_path = self.save_image_to_tmp(self.selected_cropped_image)
-        else:
-            tmp_image_path = None
+        tmp_image_path = self.save_image_to_tmp(self.selected_cropped_image) if self.selected_cropped_image else None
 
-        generator = explain_ai(self.page_text, tmp_image_path)
-        self.show_response_popup(generator, language_code="en")
+        def threaded_explain():
+            generator = explain_ai(self.page_text, tmp_image_path)
+            self.root.after(2, lambda: self.show_response_popup(generator, language_code="en"))
+
+        threading.Thread(target=threaded_explain, daemon=True).start()
 
     def translate_ai_popup(self):
         self.translate_popup = tk.Toplevel(self.root)
@@ -561,20 +753,26 @@ class PDFViewer:
         }
         language_code = lang_mapping.get(target_lang, "en")
         self.translate_popup.destroy()
+        tmp_image_path = self.save_image_to_tmp(self.selected_cropped_image) if self.selected_cropped_image else None
 
-        if self.selected_cropped_image:
-            tmp_image_path = self.save_image_to_tmp(self.selected_cropped_image)
-        else:
-            tmp_image_path = None
+        def threaded_translate():
+            generator = translate_ai(target_lang, tmp_image_path)
+            self.root.after(0, lambda: self.show_response_popup(generator, language_code=language_code))
 
-        generator = translate_ai(target_lang, tmp_image_path)
-        self.show_response_popup(generator, language_code=language_code)
+        threading.Thread(target=threaded_translate, daemon=True).start()
+
+    def search_ai_overlay(self):
+        tmp_image_path = self.save_image_to_tmp(self.selected_cropped_image) if self.selected_cropped_image else None
+
+        def threaded_search():
+            dummy_links = ["https://link1", "https://link2", "https://link3"]
+            response_text = "Here are some relevant links:\n\n" + "\n".join(dummy_links)
+            
+            self.root.after(0, lambda: self.show_response_popup(iter([response_text]), language_code="en"))
+
+        threading.Thread(target=threaded_search, daemon=True).start()
 
     def show_response_popup(self, response_generator, language_code="en"):
-        """
-        Display streaming response in a popup.
-        'response_generator' is a generator that yields text chunks.
-        """
         if self.response_popup is not None and self.response_popup.winfo_exists():
             self.response_popup.destroy()
 
@@ -590,7 +788,6 @@ class PDFViewer:
         response_frame = ttk.Frame(self.response_popup)
         response_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
-        # Use Arial (or any Arabic-capable font) to handle Arabic scripts better
         self.response_area = tk.Text(
             response_frame,
             wrap=tk.WORD,
@@ -607,34 +804,19 @@ class PDFViewer:
         response_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self.response_area.config(yscrollcommand=response_scroll.set)
 
-        # We'll store the accumulated text so "Read Aloud" can speak the entire text
         self.current_response_text = ""
         self.response_language = language_code
+        self.response_area.tag_config("arabic", font=("Arial", 12), justify="right", foreground="#0D47A1")
 
-        # Tag for Arabic: right aligned, using a font that supports Arabic
-        self.response_area.tag_config(
-            "arabic",
-            font=("Arial", 12),
-            justify="right",
-            foreground="#0D47A1"
-        )
-
-        # Buttons (Read Aloud, Close)
         btn_frame = ttk.Frame(self.response_popup)
         btn_frame.pack(pady=(5, 10))
 
-        # Create and store the read_button reference
-        self.read_button = ttk.Button(
-            btn_frame,
-            text="🔊 Read Aloud",
-            command=lambda: self.read_aloud_after_stream(self.current_response_text, language_code)
-        )
+        self.read_button = ttk.Button(btn_frame, text="🔊 Read Aloud", command=lambda: self.read_aloud_after_stream(language_code))
         self.read_button.pack(side=tk.LEFT, padx=5)
 
         close_button = ttk.Button(btn_frame, text="Close", command=self.close_response_popup)
         close_button.pack(side=tk.LEFT, padx=5)
 
-        # Mouse wheel scrolling
         def on_text_mousewheel(event):
             if event.delta:
                 event.widget.yview_scroll(-int(event.delta / 120), "units")
@@ -651,43 +833,68 @@ class PDFViewer:
 
         self.response_popup.protocol("WM_DELETE_WINDOW", self.close_response_popup)
 
-        # Set flag to indicate streaming is starting
         self.streaming_in_progress = True
-        # Start streaming
-        self.stream_response(response_generator)
+        threading.Thread(target=self._stream_response_thread, args=(response_generator,), daemon=True).start()
 
-    def stream_response(self, generator):
-        """
-        Reads the next chunk from 'generator' and appends it to the response_area.
-        Schedules itself via after() until generator is exhausted.
-        """
+    def _stream_response_thread(self, generator):
         try:
-            chunk = next(generator)
-            self.current_response_text += chunk
-
-            # Clear the text area and re-insert the updated text
-            self.response_area.config(state=tk.NORMAL)
-            self.response_area.delete("1.0", tk.END)
-
-            if self.response_language == "ar":
-                # Reshape and apply bidi conversion
-                reshaped_text = arabic_reshaper.reshape(self.current_response_text)
-                # Use RTL override marker instead of embedding/reversing lines
-                display_text = "\u202E" + get_display(reshaped_text) + "\u202C"
-                self.response_area.insert(tk.END, display_text, "arabic")
-            else:
-                self.response_area.insert(tk.END, self.current_response_text)
-
-            self.response_area.config(state=tk.DISABLED)
-
-            # Schedule next chunk
-            self.response_popup.after(1, lambda: self.stream_response(generator))
+            for chunk in generator:
+                self.current_response_text += chunk
+                self.root.after(0, self._update_response_area)
         except StopIteration:
-            # Streaming is complete; unset the flag.
+            pass
+        finally:
             self.streaming_in_progress = False
 
+    def _update_response_area(self):
+        self.response_area.config(state=tk.NORMAL)
+        self.response_area.delete("1.0", tk.END)
 
-    # --- TTS ---
+        if self.response_language == "ar":
+            reshaped_text = arabic_reshaper.reshape(self.current_response_text)
+            display_text = "\u202E" + get_display(reshaped_text) + "\u202C"
+            self.response_area.insert(tk.END, display_text, "arabic")
+        else:
+            self.response_area.insert(tk.END, self.current_response_text)
+
+        self.response_area.config(state=tk.DISABLED)
+
+    # --- Streaming TTS for Read Aloud ---
+    def read_aloud_after_stream(self, language_code):
+        if self.tts_streaming:
+            return
+        self.tts_streaming = True
+        self.read_button.config(text="Generating Audio...")
+        self.tts_read_index = 0
+        threading.Thread(target=self.stream_read_aloud, args=(language_code,), daemon=True).start()
+
+    def stream_read_aloud(self, language_code):
+        while True:
+            new_text = self.current_response_text[self.tts_read_index:]
+            if new_text:
+                try:
+                    tts = gTTS(text=new_text, lang=language_code)
+                    temp_file = f"temp_audio_{self.tts_read_index}.mp3"
+                    tts.save(temp_file)
+                    while pygame.mixer.music.get_busy():
+                        pygame.time.wait(100)
+                    pygame.mixer.music.load(temp_file)
+                    pygame.mixer.music.play()
+                    while pygame.mixer.music.get_busy():
+                        pygame.time.wait(100)
+                    os.remove(temp_file)
+                    self.tts_read_index = len(self.current_response_text)
+                except Exception as e:
+                    print("TTS error:", e)
+                    break
+            else:
+                if not self.streaming_in_progress:
+                    break
+                pygame.time.wait(200)
+
+        self.tts_streaming = False
+        self.read_button.config(text="🔊 Read Aloud")
+
     def read_aloud(self, text, language_code):
         try:
             tts = gTTS(text=text, lang=language_code)
@@ -698,20 +905,6 @@ class PDFViewer:
             pygame.mixer.music.play()
         except Exception as e:
             messagebox.showerror("Error", f"Failed to play audio:\n{e}")
-
-    def read_aloud_after_stream(self, text, language_code):
-        """
-        If streaming is still in progress, update the button to show a loading message.
-        Once streaming is complete, revert the button and play the audio.
-        """
-        if self.streaming_in_progress:
-            if self.read_button:
-                self.read_button.config(text="Generating...")
-            self.response_popup.after(100, lambda: self.read_aloud_after_stream(text, language_code))
-        else:
-            if self.read_button:
-                self.read_button.config(text="🔊 Read Aloud")
-            self.read_aloud(text, language_code)
 
     def close_response_popup(self):
         try:
@@ -725,32 +918,27 @@ class PDFViewer:
         if self.response_popup and self.response_popup.winfo_exists():
             self.response_popup.destroy()
 
-    # --- AI Chat Functions ---
     def process_ai_chat_message(self):
-        """
-        Takes the user's input, displays it, then streams the AI response chunk-by-chunk.
-        """
         message = self.chat_input.get("1.0", tk.END).strip()
         if message:
-            # 1) Show user's message
             self.append_chat_message("You", message)
-            # 2) Clear the input
             self.chat_input.delete("1.0", tk.END)
-            # 3) Stream from chat_ai
-            generator = chat_ai(message)
-            # 4) Create an empty bubble for AI
             ai_label = self.append_chat_message("AI", "")
-            # 5) Stream the AI response into that bubble
-            self.stream_chat_response(generator, ai_label)
+            threading.Thread(target=self._process_chat_ai, args=(message, ai_label), daemon=True).start()
+
+    def _process_chat_ai(self, message, ai_label):
+        try:
+            generator = chat_ai(message)
+            partial_text = ""
+            for chunk in generator:
+                partial_text += chunk
+                self.root.after(0, lambda pt=partial_text: ai_label.config(text=pt))
+        except Exception as e:
+            self.root.after(1, lambda: ai_label.config(text="Error: " + str(e)))
 
     def append_chat_message(self, sender, message):
         self.chat_log.config(state=tk.NORMAL)
-
-        if sender == "You":
-            bubble_color = "#DCEFFF"
-        else:
-            bubble_color = "#EAEAEA"
-
+        bubble_color = "#DCEFFF" if sender == "You" else "#EAEAEA"
         bubble_frame = tk.Frame(self.chat_log, bg=bubble_color, bd=0, highlightthickness=0)
         bubble_label = tk.Label(
             bubble_frame,
@@ -764,32 +952,21 @@ class PDFViewer:
         bubble_label.pack(padx=10, pady=2)
 
         self.chat_log.insert(tk.END, "\n")
-        self.chat_log.window_create(
-            tk.END,
-            window=bubble_frame,
-            padx=10,
-            pady=2
-        )
+        self.chat_log.window_create(tk.END, window=bubble_frame, padx=10, pady=2)
         self.chat_log.insert(tk.END, "\n")
-
         self.chat_log.see(tk.END)
         self.chat_log.config(state=tk.DISABLED)
-
         return bubble_label
-
-    def stream_chat_response(self, generator, bubble_label, partial_text=""):
-        try:
-            chunk = next(generator)
-            partial_text += chunk
-            bubble_label.config(text=partial_text)
-            self.chat_log.see(tk.END)
-            self.root.after(1, self.stream_chat_response, generator, bubble_label, partial_text)
-        except StopIteration:
-            pass
 
 
 if __name__ == "__main__":
     root = tk.Tk()
-    root.geometry("1024x768")
+    
+    screen_width = root.winfo_screenwidth()
+    screen_height = root.winfo_screenheight()
+    
+    root.geometry(f"{screen_width}x{screen_height}+0+0")
+    
     viewer = PDFViewer(root)
     root.mainloop()
+

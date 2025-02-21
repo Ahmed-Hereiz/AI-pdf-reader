@@ -50,6 +50,16 @@ def chat_ai(message):
     for output in chat_agent.loop():
         yield output
 
+
+def notes_ai(full_page_text, image):
+    notes_text_prompt = f"Please provide a detailed summary of the following text: '{full_page_text}'. Additionally, consider the full page context: '{full_page_text}' Make sure to return the output as md and lines seperated by <br> tags for good view. preferred to make the notes as bullet points try to make 5 to 8 points max, don't write explainations just the notes directly as bullet points only"
+    notes_llm = SimpleMultiModal(api_key=config["api_key"], model=config["model"], temperature=0.5)
+    notes_prompt = SimplePrompt(text=notes_text_prompt, image=image)
+    notes_prompt.construct_prompt()
+    notes_agent = SimpleRuntime(llm=notes_llm, prompt=notes_prompt)
+    
+    return notes_agent.loop()
+
 # def test_functions():
 #     # Test data
 #     test_image = "/home/ahmed-hereiz/self/pdf-AI-reader/tmp/pdf_ai_tmp_image_.png"
