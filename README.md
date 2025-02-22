@@ -39,3 +39,20 @@ A powerful PDF viewer application that integrates AI capabilities to enhance doc
 6. Add smart notes to annotate pages
 
 The application combines traditional PDF viewing capabilities with modern AI features for an enhanced document reading and analysis experience.
+
+
+## Installation & Setup
+
+1. Clone the repository
+2. Navigate to the project directory
+3. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+### Running the Application
+
+1. After installing dependencies, run:
+   ```bash
+   python3 open_pdf.py
+   ```
