@@ -49,6 +49,7 @@ The application combines traditional PDF viewing capabilities with modern AI fea
    ```bash
    pip install -r requirements.txt
    ```
+4. create llm.json
 
 ### Running the Application
 
