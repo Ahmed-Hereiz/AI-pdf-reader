@@ -50,6 +50,7 @@ The application combines traditional PDF viewing capabilities with modern AI fea
    pip install -r requirements.txt
    ```
 4. create llm.json
+5. Add api keys
 
 ### Running the Application
 
