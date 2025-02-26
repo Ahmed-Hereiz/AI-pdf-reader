@@ -9,8 +9,10 @@ import pygame
 import threading
 import random
 import webbrowser
-import requests
-
+import time
+import pyaudio
+import wave
+import numpy as np
 
 import arabic_reshaper
 from bidi.algorithm import get_display
@@ -77,8 +79,9 @@ class PDFViewer:
         # keyed by page number: page_notes[page_number] = (widget, or data)
         self.page_notes = {}
 
-        # This button is created but hidden/disabled until PDF is opened
-        self.add_note_btn = None
+        # For voice commands
+        self.recording = False
+        self.voice_command_popup = None
 
         self.setup_styles()
         self.create_widgets()
@@ -207,6 +210,7 @@ class PDFViewer:
         self.h_scroll.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=(0, 5))
         self.page_canvas.configure(yscrollcommand=self.v_scroll.set, xscrollcommand=self.h_scroll.set)
 
+        # "Take page's notes with AI" button
         note_icon = load_icon("note_icon.png", size=(32, 32))
         self.add_note_btn = ttk.Button(
             self.viewer_frame,
@@ -217,8 +221,49 @@ class PDFViewer:
             command=self.add_sticky_note
         )
         self.add_note_btn.image = note_icon
-        self.add_note_btn.place(x=10, rely=1.0, anchor="sw", y=-10)  
-        self.add_note_btn.config(state=tk.DISABLED) 
+        self.add_note_btn.place(x=10, rely=1.0, anchor="sw", y=-10)
+        self.add_note_btn.config(state=tk.DISABLED)
+
+        self.root.update_idletasks()
+        notes_button_width = self.add_note_btn.winfo_width()
+
+        voice_icon = load_icon("record_icon.png", size=(32, 32))
+        self.voice_command_btn = ttk.Button(
+            self.viewer_frame,
+            text="Voice Commands",
+            image=voice_icon,
+            style="RoundedButton.TButton",
+            compound=tk.LEFT,
+            command=self.start_voice_command
+        )
+        self.voice_command_btn.image = voice_icon
+        self.voice_command_btn.place(x=10 + notes_button_width + 10, rely=1.0, anchor="sw", y=-10)
+
+        self.root.bind_all("<MouseWheel>", self.on_mouse_wheel)
+        self.root.bind_all("<Button-4>", self.on_mouse_wheel)
+        self.root.bind_all("<Button-5>", self.on_mouse_wheel)
+        self.page_canvas.bind("<Enter>", lambda e: self.page_canvas.focus_set())
+
+        self.page_canvas.bind("<Button-1>", self.on_canvas_mouse_down)
+        self.page_canvas.bind("<B1-Motion>", self.on_canvas_mouse_drag)
+        self.page_canvas.bind("<ButtonRelease-1>", self.on_canvas_mouse_up)
+
+        self.chat_frame = ttk.Frame(self.main_frame, style="Chat.TFrame", width=0)
+        self.chat_frame.pack(side=tk.RIGHT, fill=tk.Y)
+        self.chat_frame.pack_propagate(False)
+        self.setup_ai_chat()
+
+        self.toggle_button = ttk.Button(
+            self.main_frame,
+            style="RoundedButton.TButton",
+            command=self.toggle_chat,
+            image=self.chat_open_icon_img if self.chat_open_icon_img else None,
+            text="" if self.chat_open_icon_img else self.chat_open_icon_text,
+            compound=tk.LEFT
+        )
+        self.toggle_button.place(relx=1.0, rely=0.0, anchor="ne", x=-5, y=5)
+
+
         # ===============================================================================
 
         # Mouse wheel
@@ -248,7 +293,6 @@ class PDFViewer:
         )
         self.toggle_button.place(relx=1.0, rely=0.0, anchor="ne", x=-5, y=5)
 
-    # -- Sticky Note Logic --
     def add_sticky_note(self):
         """
         1) Immediately show a 'Generating...' note so the user knows it's in progress.
@@ -257,22 +301,17 @@ class PDFViewer:
         4) Show the final note in show_sticky_note_for_page.
         """
 
-        # 1) Show a placeholder note immediately
         self.page_notes[self.current_page] = "<p><em>Generating note...</em></p>"
         self.show_sticky_note_for_page(self.current_page)
 
         def threaded_note():
-            # 2) Call your real AI function to get Markdown text
             md_text = notes_ai(self.page_text, self.current_pil_image)
-            # 3) Convert the Markdown to HTML
             html_text = markdown.markdown(md_text)
             self.page_notes[self.current_page] = html_text
-            # 4) Update the UI in the main thread
             self.root.after(0, lambda: self.show_sticky_note_for_page(self.current_page))
 
         # Run in background so UI remains responsive
         threading.Thread(target=threaded_note, daemon=True).start()
-
 
     def show_sticky_note_for_page(self, page_number):
         """
@@ -292,25 +331,6 @@ class PDFViewer:
 
         # Choose a random background color
         note_colors = [
-            # "#FFFACD",  # LemonChiffon
-            # "#FFDAB9",  # PeachPuff
-            # "#E0FFFF",  # LightCyan
-            # "#F5FFFA",  # MintCream
-            # "#F0FFF0",  # Honeydew
-            # "#FFF0F5",  # LavenderBlush
-            # "#FAFAD2",  # LightGoldenRodYellow
-            # "#FFE4E1",  # MistyRose
-            # "#E6E6FA",  # Lavender
-            # "#FFB6C1",  # LightPink
-            # "#FFDEAD",  # NavajoWhite
-            # "#FFF5EE",  # Seashell
-            # "#F0E68C",  # Khaki
-            # "#AFEEEE",  # PaleTurquoise
-            # "#98FB98",  # PaleGreen
-            # "#FFEFD5",  # PapayaWhip
-            # "#FFF8DC",  # Cornsilk
-            # "#F5F5DC",  # Beige
-            # "#F8F8FF",  # GhostWhite
             "#F0F8FF"   # AliceBlue
         ]
         bg_color = random.choice(note_colors)
@@ -352,7 +372,6 @@ class PDFViewer:
         del_btn.pack(side="right", padx=5, pady=5)
 
         # --- Main content area: HTMLScrolledText with vertical scrollbar ---
-        # This widget will automatically show a scrollbar if content is tall
         scroll_label = HTMLScrolledText(
             note_frame,
             html=html_text,
@@ -662,7 +681,6 @@ class PDFViewer:
         translate_btn.grid(row=0, column=2, padx=2, pady=2)
         search_btn.grid(row=0, column=3, padx=2, pady=2)
 
-
         self.selection_overlay = self.page_canvas.create_window(x + 5, y + 5, window=overlay_frame, anchor="nw")
 
     def save_image_to_tmp(self, image):
@@ -799,14 +817,12 @@ class PDFViewer:
 
         threading.Thread(target=threaded_search, daemon=True).start()
 
-
     def show_youtube_results_popup(self, results):
         popup = tk.Toplevel(self.root)
         popup.title("YouTube Search Results")
         popup.configure(bg="#F0F4FB")
         popup.geometry("800x600")  
         
-        # Optional heading at the top
         heading_label = tk.Label(
             popup,
             text="YouTube Search Results",
@@ -822,7 +838,6 @@ class PDFViewer:
         scrollbar.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)
         
-        # A container frame inside the canvas.
         container = tk.Frame(canvas, bg="#F0F4FB")
         canvas.create_window((0, 0), window=container, anchor="nw")
         
@@ -834,7 +849,6 @@ class PDFViewer:
         HOVER_BG = "#e6f2ff"  
         
         for idx, result in enumerate(results):
-            # Each row is a clickable Frame with a light border.
             row_frame = tk.Frame(
                 container,
                 bg=NORMAL_BG,
@@ -845,14 +859,11 @@ class PDFViewer:
             )
             row_frame.pack(fill="x", padx=10, pady=5)
             
-            # Define click action for the row.
             def open_url(event, url=result["video_url"]):
                 webbrowser.open(url)
             
-            # Bind the entire frame to open the URL on click.
             row_frame.bind("<Button-1>", open_url)
             
-            # Hover effect: change background color when mouse enters/leaves.
             def on_enter(event, frame=row_frame):
                 frame.configure(bg=HOVER_BG)
                 for child in frame.winfo_children():
@@ -865,7 +876,6 @@ class PDFViewer:
             row_frame.bind("<Enter>", on_enter)
             row_frame.bind("<Leave>", on_leave)
             
-            # Title label (clickable + hover).
             title_label = tk.Label(
                 row_frame,
                 text=result["title"],
@@ -876,7 +886,6 @@ class PDFViewer:
             )
             title_label.pack(side="top", fill="x")
             
-            # Make the label clickable and have hover effect.
             title_label.bind("<Button-1>", open_url)
             title_label.bind("<Enter>", on_enter)
             title_label.bind("<Leave>", on_leave)
@@ -895,7 +904,6 @@ class PDFViewer:
             description_label.bind("<Button-1>", open_url)
             description_label.bind("<Enter>", on_enter)
             description_label.bind("<Leave>", on_leave)
-
 
     def show_response_popup(self, response_generator, language_code="en"):
         if self.response_popup is not None and self.response_popup.winfo_exists():
@@ -1083,6 +1091,222 @@ class PDFViewer:
         self.chat_log.config(state=tk.DISABLED)
         return bubble_label
 
+    def start_voice_command(self):
+        """
+        Opens a 300×500 popup over the current window (useful for multi-monitor setups).
+        Displays:
+        - A microphone icon (optional) at the top.
+        - "Recording XXX" label & a timer label.
+        - A waveform canvas in the middle that reflects actual mic amplitude.
+        - A 'Stop' button styled like the rest of your app.
+        """
+        # Keep track of how many recordings the user has made (optional).
+        if not hasattr(self, "record_count"):
+            self.record_count = 1
+        else:
+            self.record_count += 1
+
+        # Create the popup
+        self.voice_command_popup = tk.Toplevel(self.root)
+        self.voice_command_popup.title("Voice Recorder")
+        # We'll set a fixed size of 300x500 for demonstration:
+        win_width, win_height = 300, 500
+
+        # Center it over the main window, rather than the entire screen
+        parent_x = self.root.winfo_rootx()
+        parent_y = self.root.winfo_rooty()
+        parent_width = self.root.winfo_width()
+        parent_height = self.root.winfo_height()
+
+        # Calculate center coordinates relative to the parent window
+        x = parent_x + (parent_width // 2) - (win_width // 2)
+        y = parent_y + (parent_height // 2) - (win_height // 2)
+        self.voice_command_popup.geometry(f"{win_width}x{win_height}+{x}+{y}")
+
+        # Match your existing color scheme
+        self.voice_command_popup.configure(bg="#E3F2FD")
+        self.voice_command_popup.transient(self.root)
+        self.voice_command_popup.grab_set()
+
+        # Optional: load a microphone icon (pink or any color you like).
+        # Make sure you have an image file "mic_icon.png" in your assets folder.
+        # If not found, it will just skip and show text fallback.
+        try:
+            mic_icon = load_icon("record_icon.png", size=(64, 64))
+            self.mic_label = tk.Label(self.voice_command_popup, image=mic_icon, bg="#E3F2FD")
+            self.mic_label.image = mic_icon  # keep a reference
+            self.mic_label.pack(pady=(20, 10))
+        except:
+            self.mic_label = tk.Label(self.voice_command_popup, text="🎤", font=("Helvetica", 40), bg="#E3F2FD")
+            self.mic_label.pack(pady=(20, 10))
+
+        # "Recording XXX" label
+        recording_title = f"Recording {self.record_count:03d}"
+        self.recording_label = tk.Label(
+            self.voice_command_popup, 
+            text=recording_title,
+            font=("Helvetica", 14, "bold"),
+            fg="#0D47A1",
+            bg="#E3F2FD"
+        )
+        self.recording_label.pack()
+
+        # Timer label
+        self.record_time_label = tk.Label(
+            self.voice_command_popup, 
+            text="0:00", 
+            font=("Helvetica", 12),
+            fg="#0D47A1",
+            bg="#E3F2FD"
+        )
+        self.record_time_label.pack(pady=(0, 20))
+
+        # Waveform canvas
+        self.wave_canvas_width = 250
+        self.wave_canvas_height = 100
+        self.wave_canvas = tk.Canvas(
+            self.voice_command_popup, 
+            width=self.wave_canvas_width,
+            height=self.wave_canvas_height,
+            bg="#E3F2FD",       # match your app background
+            highlightthickness=0
+        )
+        self.wave_canvas.pack(pady=10)
+
+        # "Stop" button in your style
+        # If you have a ttk style named "RoundedButton.TButton", use that.
+        # Otherwise, just use a normal tk.Button with your color scheme.
+        self.stop_button = ttk.Button(
+            self.voice_command_popup,
+            text="Stop",
+            style="RoundedButton.TButton",  # if your style is defined
+            command=self.stop_voice_recording
+        )
+        self.stop_button.pack(pady=20)
+
+        # Initialize recording variables
+        self.recording = True
+        self.audio_frames = []
+        self.current_amplitude = 0
+        self.wave_data = [0]*50  # keep 50 amplitude values for scrolling
+        self.record_start_time = time.time()
+
+        # Start audio capture in a background thread
+        threading.Thread(target=self.record_audio, daemon=True).start()
+
+        # Start periodic UI updates: waveform + timer
+        self.update_waveform()
+        self.update_record_time()
+
+    def record_audio(self):
+        """Capture real audio from the mic, compute amplitude, and store frames."""
+        FORMAT = pyaudio.paInt16
+        CHANNELS = 1
+        RATE = 44100
+        CHUNK = 1024
+
+        p = pyaudio.PyAudio()
+        self.pyaudio_instance = p
+
+        stream = p.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
+        while self.recording:
+            try:
+                data = stream.read(CHUNK, exception_on_overflow=False)
+            except:
+                continue
+            self.audio_frames.append(data)
+
+            # Convert raw bytes to NumPy array for amplitude analysis
+            audio_data = np.frombuffer(data, dtype=np.int16)
+            max_amp = np.abs(audio_data).max()
+            # Normalize amplitude between 0.0 and 1.0
+            self.current_amplitude = max_amp / 32768.0
+
+        # Cleanup once recording stops
+        stream.stop_stream()
+        stream.close()
+        p.terminate()
+
+    def update_waveform(self):
+        """Periodically update the waveform by adding the latest amplitude
+        and re-drawing it as vertical bars on the canvas."""
+        if self.recording:
+            # Shift old values left, append new amplitude
+            self.wave_data.pop(0)
+            self.wave_data.append(self.current_amplitude)
+
+        # Clear the canvas
+        self.wave_canvas.delete("all")
+
+        # Draw each amplitude as a vertical bar
+        bar_width = self.wave_canvas_width / len(self.wave_data)
+        center_y = self.wave_canvas_height // 2
+        for i, amp in enumerate(self.wave_data):
+            # Scale amplitude to half the canvas height
+            bar_height = int(amp * (self.wave_canvas_height // 2))
+            x1 = i * bar_width
+            x2 = x1 + (bar_width * 0.8)  # small gap
+            y1 = center_y - bar_height
+            y2 = center_y + bar_height
+            # Use your brand color (e.g., #2196F3 or #1976D2) for the bars
+            self.wave_canvas.create_rectangle(
+                x1, y1, x2, y2,
+                fill="#2196F3",  # Blue color
+                outline=""
+            )
+
+        # Schedule next update in 100 ms
+        if self.recording:
+            self.voice_command_popup.after(100, self.update_waveform)
+
+    def update_record_time(self):
+        """Update the recording timer (MM:SS) every second."""
+        if self.recording:
+            elapsed = int(time.time() - self.record_start_time)
+            minutes = elapsed // 60
+            seconds = elapsed % 60
+            self.record_time_label.config(text=f"{minutes}:{seconds:02d}")
+            self.voice_command_popup.after(1000, self.update_record_time)
+
+    def stop_voice_recording(self):
+        """Stop the recording and schedule the 'processing' step."""
+        if self.recording:
+            self.recording = False
+            self.recording_label.config(text="Stopping...")
+            self.stop_button.config(state=tk.DISABLED)
+
+            # Give a moment for record_audio loop to exit
+            self.root.after(1000, self.process_voice_command)
+
+    def process_voice_command(self):
+        """
+        For now, DO NOT SAVE the audio (commented out).
+        Just show a messagebox with a dummy result.
+        Uncomment the lines if/when you install ffmpeg and want to save audio.
+        """
+
+        
+
+        filename_wav = f"tmp/recorded_audio_.wav"
+        p = self.pyaudio_instance
+        wf = wave.open(filename_wav, 'wb')
+        wf.setnchannels(1)
+        wf.setsampwidth(p.get_sample_size(pyaudio.paInt16))
+        wf.setframerate(44100)
+        wf.writeframes(b''.join(self.audio_frames))
+        wf.close()
+
+        result = self.dummy_voice_ai(None)
+        messagebox.showinfo("Voice Command Result", result)
+
+        # Close the popup
+        self.voice_command_popup.destroy()
+
+    def dummy_voice_ai(self, audio_path):
+        """Dummy AI function that just returns a fixed message for now."""
+        return "hello from AI"
+
+
 
 if __name__ == "__main__":
     root = tk.Tk()
@@ -1094,4 +1318,3 @@ if __name__ == "__main__":
     
     viewer = PDFViewer(root)
     root.mainloop()
-
