@@ -9,6 +9,7 @@ cp dist/open_pdf AI_pdf_reader_linux/
 # Copy additional project files (adjust if your structure is different)
 cp call_ai.py AI_pdf_reader_linux/
 cp -r customAgents* AI_pdf_reader_linux/
+cp -r fileai AI_pdf_reader_linux/
 cp -r assets AI_pdf_reader_linux/
 cp -r helpers AI_pdf_reader_linux/
 cp -r RAG AI_pdf_reader_linux/
