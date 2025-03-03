@@ -54,3 +54,64 @@ class AudioMultiModal(BaseMultiModal):
         else:
             response = self.audio_model.generate_content([prompt, audio_content])
             return response.text
+
+
+
+if __name__ == "__main__":
+    # Load config from llm.json
+    import json
+    with open('llm.json', 'r') as f:
+        config = json.load(f)
+        api_key = config['api_key']
+        model_config = config.get('model_config', {})
+
+    # Test TextLLM
+    text_llm = TextLLM(
+        api_key=api_key,
+        model=model_config.get('text_model', 'gemini-pro'),
+        temperature=model_config.get('temperature', 0.7)
+    )
+    
+    # Test text generation
+    prompt = "Write a short poem about artificial intelligence."
+    print("\nTesting TextLLM:")
+    for response in text_llm.llm_generate(prompt):
+        print(response, end="")
+    print("\n")
+
+    # Test ImageMultiModalLLM
+    image_llm = ImageMultiModalLLM(
+        api_key=api_key,
+        model=model_config.get('image_model', 'gemini-pro-vision'),
+        temperature=model_config.get('temperature', 0.7)
+    )
+    
+    # Test image analysis (you would need an actual image file)
+    print("Testing ImageMultiModalLLM:")
+    try:
+        from PIL import Image
+        image = Image.open("path_to_test_image.jpg")
+        prompt = "Describe what you see in this image."
+        for response in image_llm.multimodal_generate(prompt, image):
+            print(response, end="")
+    except Exception as e:
+        print(f"Image test skipped: {str(e)}")
+    print("\n")
+
+    # Test AudioMultiModal
+    audio_llm = AudioMultiModal(
+        api_key=api_key,
+        model=model_config.get('audio_model', 'gemini-pro'),
+        temperature=model_config.get('temperature', 0.7)
+    )
+    
+    # Test audio analysis (you would need an actual audio file)
+    print("Testing AudioMultiModal:")
+    try:
+        prompt = "Transcribe and analyze this audio."
+        audio_path = "path_to_test_audio.mp3"
+        for response in audio_llm.multimodal_generate(prompt, audio_path):
+            print(response, end="")
+    except Exception as e:
+        print(f"Audio test skipped: {str(e)}")
+
