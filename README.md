@@ -58,3 +58,5 @@ The application combines traditional PDF viewing capabilities with modern AI fea
    ```bash
    python3 open_pdf.py
    ```
+
+(more updates soon) 
