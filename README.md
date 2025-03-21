@@ -52,6 +52,15 @@ The application combines traditional PDF viewing capabilities with modern AI fea
 4. create llm.json
 5. Add api keys (gemini api key & youtube api key)
 
+### json file content (llm.json)
+```json
+{
+  "api_key":"gemini api key"
+  "model":"gemini-2.0-flash"
+  "youtube_key":"youtube key"
+}
+```
+
 ### Running the Application
 
 1. After installing dependencies, run:
