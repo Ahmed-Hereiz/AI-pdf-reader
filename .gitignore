@@ -1,5 +1,4 @@
 venv/
-llm.json
 tmp/
 *.pdf
 __pycache__/
